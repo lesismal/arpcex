@@ -10,11 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gofiber/fiber/v3"
 	"github.com/lesismal/arpc"
-	"github.com/lesismal/arpcex/extension/protocol/websocket"
+	websocket "github.com/lesismal/arpcex/extension/protocol/gws"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
-var handlerType = flag.String("h", "fiber", "use std/gin/fiber listener")
+var handlerType = flag.String("h", "std", "use std/gin/fiber listener")
 
 func main() {
 	flag.Parse()
@@ -83,7 +83,7 @@ func fberListener() net.Listener {
 	ln, _ := websocket.Listen("localhost:8888", nil)
 	router.Get("/ws", func(c fiber.Ctx) error {
 		handler := fasthttpadaptor.NewFastHTTPHandler(&arpcHTTPHandler{ln: ln.(*websocket.Listener)})
-		handler(c.Context())
+		handler(c.RequestCtx())
 		return nil
 
 	})

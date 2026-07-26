@@ -6,12 +6,12 @@ package gws
 
 import (
 	"errors"
-	"github.com/lxzan/gws"
-	"io"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/lxzan/gws"
 )
 
 var (
@@ -23,19 +23,8 @@ var (
 	ErrInvalidMessageType = errors.New("invalid message type")
 )
 
-func getPipeReader(socket *gws.Conn) io.ReadCloser {
-	pr, _ := socket.Session().Load("pr")
-	return pr.(io.ReadCloser)
-}
-
-func getPipeWriter(socket *gws.Conn) io.WriteCloser {
-	pw, _ := socket.Session().Load("pw")
-	return pw.(io.WriteCloser)
-}
-
 // Listener .
 type Listener struct {
-	gws.BuiltinEventHandler
 	addr     net.Addr
 	upgrader *gws.Upgrader
 	chAccept chan net.Conn
@@ -51,7 +40,6 @@ func (ln *Listener) Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go c.ReadLoop()
 	wsc := &Conn{Conn: c, chHandler: make(chan func(), 1)}
 	select {
 	case ln.chAccept <- wsc:
@@ -83,37 +71,19 @@ func (ln *Listener) Accept() (net.Conn, error) {
 	return nil, ErrClosed
 }
 
-type eventHandler struct {
-	gws.BuiltinEventHandler
-}
-
-func (e *eventHandler) OnOpen(socket *gws.Conn) {
-	pr, pw := io.Pipe()
-	socket.Session().Store("pr", pr)
-	socket.Session().Store("pw", pw)
-}
-
-func (e *eventHandler) OnClose(socket *gws.Conn, err error) {
-	pr := getPipeReader(socket)
-	pw := getPipeWriter(socket)
-	_ = pr.Close()
-	_ = pw.Close()
-}
-
-func (e *eventHandler) OnMessage(socket *gws.Conn, message *gws.Message) {
-	defer message.Close()
-	pw := getPipeWriter(socket)
-	_, _ = pw.Write(message.Bytes())
-}
-
-// Conn wraps websocket.Conn to net.Conn
+// Conn wraps gws.Conn to net.Conn
 type Conn struct {
 	*gws.Conn
 	chHandler chan func()
+	message   *gws.Message
 	buffer    []byte
 }
 
 func (c *Conn) Close() error {
+	if c.message != nil {
+		_ = c.message.Close()
+		c.message = nil
+	}
 	return c.WriteClose(1000, nil)
 }
 
@@ -127,8 +97,26 @@ func (c *Conn) HandleWebsocket(handler func()) {
 
 // Read .
 func (c *Conn) Read(b []byte) (int, error) {
-	pr := getPipeReader(c.Conn)
-	return pr.Read(b)
+	if len(c.buffer) == 0 {
+		message, err := c.ReadMessage()
+		if err != nil {
+			return 0, err
+		}
+		c.message = message
+		c.buffer = message.Bytes()
+	}
+
+	cbl := len(c.buffer)
+	if cbl <= len(b) {
+		copy(b[:cbl], c.buffer)
+		c.buffer = nil
+		_ = c.message.Close()
+		c.message = nil
+		return cbl, nil
+	}
+	copy(b, c.buffer[:len(b)])
+	c.buffer = c.buffer[len(b):]
+	return len(b), nil
 }
 
 // Write .
@@ -157,7 +145,7 @@ func Listen(addr string, option *gws.ServerOption) (net.Listener, error) {
 	}
 	ln := &Listener{
 		addr:     tcpAddr,
-		upgrader: gws.NewUpgrader(&eventHandler{}, option),
+		upgrader: gws.NewUpgrader(&gws.BuiltinEventHandler{}, option),
 		chAccept: make(chan net.Conn, 4096),
 		chClose:  make(chan struct{}),
 	}
